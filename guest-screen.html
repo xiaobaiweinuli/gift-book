@@ -522,14 +522,12 @@
 
       // 工具函数：隐藏姓名
       function maskName(name, hidePrivacy, isLatest) {
-        if (!hidePrivacy || isLatest) {
+        // 当 hidePrivacy 为 true 时，显示所有姓名的完整信息，不进行任何脱敏处理
+        if (hidePrivacy) {
           return name;
         }
-        const nameLength = name.length;
-        if (nameLength <= 1) return name;
-        if (nameLength === 2) return name[0] + "**";
-        if (nameLength === 3) return name[0] + "**";
-        return name.substring(0, 2) + "**";
+        // 当 hidePrivacy 为 false 时，最新记录和历史记录都只显示完整姓名（不进行脱敏，因为金额会被隐藏）
+        return name;
       }
 
       // 副屏状态管理
@@ -630,10 +628,30 @@
           }
           const nameRow = document.createElement("div");
           nameRow.className = "gift-book-row";
-          const typeRow = document.createElement("div");
-          typeRow.className = "gift-book-row";
-          const amountRow = document.createElement("div");
-          amountRow.className = "gift-book-row";
+          
+          // 当 hidePrivacy 为 true 时只显示姓名，为 false 时显示完整信息
+          const showGiftInfo = !hidePrivacy;
+          let typeRow, amountRow, nameTitleRow;
+          
+          // 当开启脱敏时，在姓名上方添加标题行
+          if (hidePrivacy) {
+            nameTitleRow = document.createElement("div");
+            nameTitleRow.className = "gift-book-row title-row";
+            for (let i = 0; i < ITEMS_PER_PAGE; i++) {
+              const titleCell = document.createElement("div");
+              titleCell.className = "book-cell name-cell";
+              titleCell.innerHTML = '<div class="name title">姓名</div>';
+              nameTitleRow.appendChild(titleCell);
+            }
+          }
+          
+          if (showGiftInfo) {
+            typeRow = document.createElement("div");
+            typeRow.className = "gift-book-row";
+            amountRow = document.createElement("div");
+            amountRow.className = "gift-book-row";
+          }
+          
           displayGifts.forEach((gift) => {
             const nameCell = document.createElement("div");
             nameCell.className = "book-cell name-cell";
@@ -645,24 +663,49 @@
               if (isLatest) nameCell.classList.add("latest-entry");
             }
             nameRow.appendChild(nameCell);
-            const typeCell = document.createElement("div");
-            typeCell.className = "book-cell type-cell";
-            typeCell.textContent = typeText || "贺礼";
-            typeRow.appendChild(typeCell);
-            const amountCell = document.createElement("div");
-            amountCell.className = "book-cell amount-cell";
-            if (gift) {
-              const amountChinese = gift.amountChinese;
-              amountCell.innerHTML = `
-                <div class="amount-chinese ${amountChinese.length > 16 ? "scale" : ""}">${amountChinese}</div>
-                <div class="amount-numeric ${Math.abs(gift.amount).toString().length > 8 ? "scale" : ""}">￥${gift.amount}</div>
-              `;
-              if (gift.id === latestGiftId) amountCell.classList.add("latest-entry");
+            
+            if (showGiftInfo) {
+              const typeCell = document.createElement("div");
+              typeCell.className = "book-cell type-cell";
+              typeCell.textContent = typeText || "贺礼";
+              typeRow.appendChild(typeCell);
+              
+              const amountCell = document.createElement("div");
+              amountCell.className = "book-cell amount-cell";
+              if (gift) {
+                const amountChinese = gift.amountChinese;
+                amountCell.innerHTML = `
+                  <div class="amount-chinese ${amountChinese.length > 16 ? "scale" : ""}">${amountChinese}</div>
+                  <div class="amount-numeric ${Math.abs(gift.amount).toString().length > 8 ? "scale" : ""}>￥${gift.amount}</div>
+                `;
+                if (gift.id === latestGiftId) amountCell.classList.add("latest-entry");
+              }
+              amountRow.appendChild(amountCell);
             }
-            amountRow.appendChild(amountCell);
           });
+          
           this.giftBookContent.innerHTML = "";
-          this.giftBookContent.append(nameRow, typeRow, amountRow);
+          
+          // 根据不同的显示模式设置行高比例
+          if (hidePrivacy) {
+            // 脱敏模式：标题行矮，姓名行高
+            this.giftBookContent.style.gridTemplateRows = "1fr 3fr";
+          } else {
+            // 非脱敏模式：恢复默认比例
+            this.giftBookContent.style.gridTemplateRows = "3fr 1fr 3fr";
+          }
+          
+          // 如果有姓名标题行，先添加标题行
+          if (nameTitleRow) {
+            this.giftBookContent.appendChild(nameTitleRow);
+          }
+          
+          this.giftBookContent.appendChild(nameRow);
+          
+          if (showGiftInfo) {
+            this.giftBookContent.appendChild(typeRow);
+            this.giftBookContent.appendChild(amountRow);
+          }
         }
 
         async loadAndApplySettings() {
@@ -671,8 +714,10 @@
           const wechatBlob = await CacheManager.getImage("wechat-qr");
           const customText = settings.customText || "";
 
-          const hasContent = !!alipayBlob || !!wechatBlob || (customText && customText.trim() !== "");
-          this.applyLayout(settings.layout, hasContent);
+          const hasQrCodes = !!alipayBlob || !!wechatBlob;
+          const hasCustomText = customText && customText.trim() !== "";
+          
+          this.applyLayout(settings.layout, hasQrCodes, hasCustomText);
 
           if (alipayBlob) {
             this.qrAlipayImg.src = URL.createObjectURL(alipayBlob);
@@ -688,19 +733,82 @@
             this.qrWechatImg.src = "";
             this.qrWechatContainer.style.display = "none";
           }
-          this.customTextDisplay.innerHTML = customText;
+          
+          // 渲染自定义文字，支持markdown
+          this.customTextDisplay.innerHTML = this.renderMarkdown(customText);
         }
 
-        applyLayout(layout, hasContent) {
+        applyLayout(layout, hasQrCodes, hasCustomText) {
           this.layoutRoot.classList.remove("flex-row", "flex-row-reverse");
-          const showQrArea = layout !== "hidden" && hasContent;
+          
+          // 显示二维码区域的条件：有二维码内容 或 有自定义文字
+          const showQrArea = hasQrCodes || hasCustomText;
+          
           if (showQrArea) {
             this.qrCodeArea.style.display = "flex";
-            if (layout === "left") this.layoutRoot.classList.add("flex-row");
-            else if (layout === "right") this.layoutRoot.classList.add("flex-row-reverse");
+            
+            // 控制二维码区域的布局方向
+            if (hasQrCodes) {
+              if (layout === "left") this.layoutRoot.classList.add("flex-row");
+              else if (layout === "right") this.layoutRoot.classList.add("flex-row-reverse");
+            }
+            
+            // 根据是否有二维码调整自定义文字区域的样式
+            const qrContainerWrapper = this.qrCodeArea.querySelector(".flex.flex-1");
+            const customTextArea = this.qrCodeArea.querySelector(".custom-text-area");
+            
+            if (hasQrCodes) {
+              qrContainerWrapper.style.display = "flex";
+              customTextArea.style.marginTop = "1.5rem";
+              customTextArea.style.paddingTop = "1.5rem";
+              customTextArea.style.borderTop = "2px dashed var(--primary-border-color)";
+            } else {
+              qrContainerWrapper.style.display = "none";
+              customTextArea.style.marginTop = "0";
+              customTextArea.style.paddingTop = "1.5rem";
+              customTextArea.style.borderTop = "none";
+            }
           } else {
             this.qrCodeArea.style.display = "none";
           }
+        }
+        
+        // 简单的markdown渲染函数
+        renderMarkdown(text) {
+          if (!text) return "";
+          
+          // 转换标题，添加更明显的样式
+          text = text.replace(/^# (.*$)/gm, '<h1 style="margin: 0.5rem 0; font-size: 2rem; font-weight: bold;">$1</h1>');
+          text = text.replace(/^## (.*$)/gm, '<h2 style="margin: 0.4rem 0; font-size: 1.5rem; font-weight: bold;">$1</h2>');
+          text = text.replace(/^### (.*$)/gm, '<h3 style="margin: 0.3rem 0; font-size: 1.2rem; font-weight: bold;">$1</h3>');
+          
+          // 转换粗体和斜体
+          text = text.replace(/\*\*(.*?)\*\*/gm, '<strong>$1</strong>');
+          text = text.replace(/\*(.*?)\*/gm, '<em>$1</em>');
+          
+          // 转换链接
+          text = text.replace(/\[(.*?)\]\((.*?)\)/gm, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color: var(--primary-color); text-decoration: underline;">$1</a>');
+          
+          // 转换代码块
+          text = text.replace(/```(.*?)```/gs, '<pre style="background-color: #f5f5f5; padding: 1rem; border-radius: 4px; margin: 0.5rem 0; font-family: monospace; font-size: 0.9rem;">$1</pre>');
+          
+          // 转换行内代码
+          text = text.replace(/`(.*?)`/gm, '<code style="background-color: #f5f5f5; padding: 0.2rem 0.4rem; border-radius: 3px; font-family: monospace; font-size: 0.9rem;">$1</code>');
+          
+          // 转换有序列表
+          text = text.replace(/^\d+\.\s(.*$)/gm, '<li style="margin-left: 1.5rem;">$1</li>');
+          text = text.replace(/<\/li>\s*<li/gm, '</li><li');
+          text = text.replace(/(<li[^>]*>.*?<\/li>)/gs, '<ol style="margin: 0.5rem 0;">$1</ol>');
+          
+          // 转换无序列表
+          text = text.replace(/^[-\*]\s(.*$)/gm, '<li style="margin-left: 1.5rem;">$1</li>');
+          text = text.replace(/<\/li>\s*<li/gm, '</li><li');
+          text = text.replace(/(<li[^>]*>.*?<\/li>)/gs, '<ul style="margin: 0.5rem 0;">$1</ul>');
+          
+          // 转换换行
+          text = text.replace(/\n/gm, '<br>');
+          
+          return text;
         }
 
         async showSettingsModal() {
@@ -770,50 +878,28 @@
             <button id="modal-save-btn" class="themed-button-primary">保存设置</button>
           `;
 
-          if (!window.pell) {
-            console.error("Pell.js 未加载!");
-            return;
-          }
-
-          const editor = window.pell.init({
-            element: document.getElementById("pell-editor-container"),
-            onChange: () => {},
-            defaultParagraphSeparator: "div",
-            styleWithCSS: false,
-            actions: [
-              { icon: '<i class="ri-bold" title="加粗"></i>', title: "Bold", result: () => window.pell.exec("bold") },
-              { icon: '<i class="ri-italic" title="斜体"></i>', title: "Italic", result: () => window.pell.exec("italic") },
-              { icon: '<i class="ri-underline" title="下划线"></i>', title: "Underline", result: () => window.pell.exec("underline") },
-            ],
+          // 创建一个简单的textarea用于输入markdown
+          const editorContainer = document.getElementById("pell-editor-container");
+          const textarea = document.createElement("textarea");
+          textarea.className = "w-full h-40 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-color focus:border-primary-color resize-none font-mono text-sm";
+          textarea.placeholder = "请输入markdown格式的文本...\n\n示例:\n# 标题\n**粗体** *斜体*\n[链接](http://example.com)";
+          textarea.value = customText;
+          editorContainer.innerHTML = "";
+          editorContainer.appendChild(textarea);
+          
+          // 模拟editor对象，以便在handleSaveSettings中使用
+          const editor = {
+            content: {
+              textContent: () => textarea.value,
+              innerText: () => textarea.value,
+              value: textarea.value
+            }
+          };
+          
+          // 更新editor.content.value当textarea内容变化时
+          textarea.addEventListener("input", () => {
+            editor.content.value = textarea.value;
           });
-          editor.content.innerHTML = customText;
-
-          const actionbar = document.getElementById("pell-editor-container").querySelector(".pell-actionbar");
-          const select = document.createElement("select");
-          select.className = "custom-pell-select";
-          select.title = "字号";
-          select.innerHTML = `<option value="1">小</option><option value="3" selected>中</option><option value="5">大</option><option value="7">特大</option>`;
-          select.onchange = () => {
-            window.pell.exec("fontSize", select.value);
-            editor.content.focus();
-          };
-          actionbar.appendChild(select);
-          const colorInput = document.createElement("input");
-          colorInput.type = "color";
-          colorInput.className = "custom-pell-color";
-          colorInput.title = "文字颜色";
-          colorInput.value = "var(--primary-color)";
-          colorInput.onchange = () => {
-            window.pell.exec("foreColor", colorInput.value);
-            editor.content.focus();
-          };
-          actionbar.appendChild(colorInput);
-          const updateToolbarState = () => {
-            const size = document.queryCommandValue("fontSize") || "3";
-            if (select.value !== size) select.value = size;
-          };
-          editor.content.addEventListener("keyup", updateToolbarState);
-          editor.content.addEventListener("mouseup", updateToolbarState);
 
           document.getElementById("modal-cancel-btn").onclick = () => this.closeSettingsModal();
           document.getElementById("modal-save-btn").onclick = () => this.handleSaveSettings(editor);
@@ -894,7 +980,8 @@
 
             // 2. 保存布局和文字
             const layout = document.querySelector('input[name="layout-position"]:checked').value;
-            const customText = editor.content.innerHTML;
+            // 获取编辑器中的纯文本内容，不包含HTML标签
+            const customText = typeof editor.content.textContent === 'function' ? editor.content.textContent() : (editor.content.value || "");
             CacheManager.storeSettings({ layout, customText });
 
             // 3. 重新加载并应用
